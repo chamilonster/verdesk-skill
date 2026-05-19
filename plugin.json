@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/claude-plugin",
+  "name": "verdesk",
+  "version": "0.1.0",
+  "description": "Skill para Claude Code que enseña a usar Verdesk — control de escritorio vía MCP con captura modulada y lectura de texto plano.",
+  "author": "Camilo Brossard",
+  "license": "MIT",
+  "repository": "https://github.com/chamilonster/verdesk-skill",
+  "homepage": "https://verdesk.app",
+  "keywords": ["mcp", "screen-capture", "desktop-automation", "claude-code"],
+  "skills": [
+    "./SKILL.md"
+  ]
+}
