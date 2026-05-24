@@ -7,10 +7,10 @@ description: Control de escritorio remoto vía MCP. El usuario te pidió conecta
 
 El usuario te pidió conectarte a un escritorio remoto (o local) que corre Verdesk y operarlo en su nombre. Esta skill enseña dos cosas, en orden:
 
-1. **Cómo conectarte** al Verdesk (bootstrap por variante).
+1. **Cómo conectarte** al Verdesk (bootstrap autocontenido).
 2. **Cómo operarlo** con las tools del MCP.
 
-Lee del prompt del usuario los datos: `variant`, `host`, `port`, `name`, `auth`. Si falta alguno, pídeselos antes de seguir.
+Lee del prompt del usuario los datos: `variant`, `host`, `port`, `control_port`, `name`, `auth`. Si falta alguno, pídeselos antes de seguir.
 
 ---
 
@@ -30,19 +30,17 @@ claude mcp add --transport http <name> http://<host>:<port>/mcp \
 
 Verifica con `claude mcp list` que `<name>` aparezca. Reporta `✓ Conectado a Verdesk (modo <variant>)`.
 
-### variant=ssh-directo
+### variant=ssh-directo | tailscale
 
-1. Pide al usuario el `<user>` SSH del host destino si no lo dio.
-2. Túnel en background: `ssh -L <port>:localhost:<port> -N -f <user>@<host>` (o sin `-f` y manejarlo como proceso background del shell).
-3. Espera 2s para que el bind se estabilice.
-4. Igual que en local/lan, pero contra `http://127.0.0.1:<port>/mcp` (no contra `<host>`).
-5. ✓ Reporta conectado.
+Estos dos modos comparten el flow: hay que abrir un túnel SSH al Pro user. Diferencia: Tailscale requiere pre-check de overlay (paso 0). El resto es idéntico.
 
-### variant=tailscale
+#### Paso 0 (sólo Tailscale) — verificar overlay
 
-El host es una IP `100.x.x.x` que **solo es alcanzable desde dentro de la overlay Tailscale**. Si fallas el preflight, el `ssh -L` da timeout sin mensaje útil. Sigue los 4 pasos en orden.
+Si `variant=ssh-directo`, salta al paso 1.
 
-#### a) ¿Tailscale instalado?
+Si `variant=tailscale`, el host es `100.x.x.x` que **sólo es alcanzable desde dentro de la overlay Tailscale**. Sin esto, todos los pasos siguientes fallan con timeout.
+
+**a) ¿Tailscale instalado?**
 
 - Windows: `where tailscale.exe`
 - macOS/Linux: `which tailscale`
@@ -59,39 +57,80 @@ Si el usuario acepta:
 - **macOS**: `brew install --cask tailscale` (asume Homebrew).
 - **Linux**: `curl -fsSL https://tailscale.com/install.sh | sh`
 
-Si el usuario rechaza: para, di *"No puedo continuar. Verdesk está detrás de CGNAT y solo es accesible vía Tailscale."*
+Si el usuario rechaza: para, di *"No puedo continuar. Verdesk está detrás de CGNAT y sólo es accesible vía Tailscale."*
 
-#### b) ¿Tailscale logueado?
-
-```
-tailscale status --json
-```
-
-Parsea `BackendState`:
-
-- `Running` → sigue a (c).
-- `NeedsLogin` / `Stopped` / `NoState` → *"Abre Tailscale desde el tray del SO y haz login con tu cuenta. Avísame cuando termines."* — espera respuesta del usuario y reintenta desde (b).
-- `NeedsMachineAuth` → *"Tu dispositivo está pendiente de aprobación en el admin panel. Entra a https://login.tailscale.com/admin/machines y apruébalo. Avísame cuando termines."*
-
-#### c) ¿El peer `<host>` es visible en mi tailnet?
-
-Polling cada 3s, máximo 60s:
+**b) ¿Tailscale logueado?**
 
 ```
 tailscale status --json
 ```
 
-Busca en `.Peer[*].TailscaleIPs[]` que aparezca `<host>`.
+- `BackendState=Running` → sigue a (c).
+- Otro → di *"Abre Tailscale desde el tray del SO y haz login. Avísame cuando termines."* Reintenta.
 
-- Aparece → sigue a (d).
-- No aparece tras 60s → *"El peer `<host>` no está en tu tailnet. Pídele al dueño del Verdesk que te comparta el node vía Tailscale Sharing: https://tailscale.com/kb/1084/sharing — que genere un share link, lo ábres en tu browser y aceptas. Avísame cuando termines."*
+**c) ¿Peer `<host>` visible?**
 
-#### d) SSH túnel + MCP add
+Polling cada 3s, max 60s, buscando `<host>` en `.Peer[*].TailscaleIPs[]` del JSON.
 
-1. `ssh -L <port>:localhost:<port> -N -f <user>@<host>` (pide `<user>` si no estaba).
-2. Espera 2s.
-3. `claude mcp add --transport http <name> http://127.0.0.1:<port>/mcp --header "X-Verdesk-Auth: <auth>" --header "X-Verdesk-Client-Name: $COMPUTERNAME"`
-4. ✓ Reporta: *"Conectado a Verdesk vía Tailscale (peer `<host>`)."*
+- Aparece → sigue al paso 1.
+- No aparece tras 60s → di *"El peer `<host>` no está en tu tailnet. Pídele al dueño del Verdesk que te comparta el node vía Tailscale Sharing: https://tailscale.com/kb/1084/sharing. Avísame cuando aceptes el share."*
+
+#### Paso 1 — generar keypair SSH temporal
+
+```
+ssh-keygen -t ed25519 -f <TEMP>/verdesk-<name>-key -N "" -C "verdesk-<name>-client"
+```
+
+Reemplaza `<TEMP>` por el dir temp del SO (`$env:TEMP` en Windows PowerShell, `/tmp` en Linux/macOS).
+
+Esto crea dos archivos: la priv (`verdesk-<name>-key`) y la pub (`verdesk-<name>-key.pub`).
+
+#### Paso 2 — autorizar la pub en el Pro user vía endpoint
+
+```
+curl -X POST "http://<host>:<control_port>/control/authorize-key" \
+  -H "Content-Type: application/json" \
+  -H "X-Verdesk-Auth: <auth>" \
+  -H "X-Verdesk-Client-Name: $COMPUTERNAME" \
+  -d "{\"public_key\": \"<contenido completo de verdesk-<name>-key.pub>\"}"
+```
+
+(Lee el contenido del `.pub` con `Get-Content` / `cat` y embebelo en el JSON. Escapá las comillas.)
+
+**Importante**: si el Verdesk está en LAN/WAN, esta llamada **dispara un popup de aprobación** en la pantalla del Pro user. La response puede tardar hasta 90s mientras el Pro acepta. Mantén el HTTP request abierto.
+
+Response esperada (JSON):
+
+```json
+{ "added": true, "ssh_user": "<USERNAME>", "authorized_keys_path": "..." }
+```
+
+- `added: true` → tu pub se appendeó al `authorized_keys` del Pro user.
+- `added: false` → tu pub ya estaba (alguien la cargó antes; igual sirve, continúa).
+- HTTP 403 → el Pro user rechazó la aprobación. Para, di *"El Pro user rechazó autorizar tu cliente. Pídele que apruebe la conexión y reintenta."*
+- HTTP 400 → la pub tiene formato inválido (volver a generar). Bug — reportar.
+
+Guarda el `ssh_user` retornado — lo usas en el paso 3.
+
+#### Paso 3 — túnel SSH + claude mcp add
+
+```
+ssh -i <TEMP>/verdesk-<name>-key -L <port>:localhost:<port> -N -f <ssh_user>@<host>
+```
+
+(El `-f` lo manda a background. En sistemas donde `-f` no funciona bien, lánzalo como background del shell.)
+
+Espera 2s para que el bind se estabilice. Después:
+
+```
+claude mcp add --transport http <name> http://127.0.0.1:<port>/mcp \
+  --header "X-Verdesk-Auth: <auth>" \
+  --header "X-Verdesk-Client-Name: $COMPUTERNAME"
+```
+
+Verifica con `claude mcp list` que `<name>` aparezca. Reporta:
+
+> ✓ Conectado a Verdesk vía <variant> (peer `<host>`, ssh_user `<ssh_user>`).
 
 ---
 
