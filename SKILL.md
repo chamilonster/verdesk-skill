@@ -1,194 +1,197 @@
 ---
 name: verdesk
-description: Control de escritorio remoto vía MCP. El usuario te pidió conectarte a un Verdesk (suyo o de otro) y operarlo. Esta skill cubre conexión + operación. Optimizada para tokens — la IA consume deltas + texto plano, no screenshots completos.
+description: Use cuando necesites controlar el escritorio del user (ver pantalla, click, escribir, leer texto en pantalla, lanzar comandos) vía Verdesk MCP. Optimizado para modelos de lenguaje — devuelve deltas + texto plano, no screenshots completos por turno.
 ---
 
-# Verdesk
+# Verdesk — control de escritorio vía MCP
 
-El usuario te pidió conectarte a un escritorio remoto (o local) que corre Verdesk y operarlo en su nombre. Esta skill enseña dos cosas, en orden:
+**Qué es**: Verdesk es un servidor MCP local que expone la pantalla y el control del PC del user para que tú lo manejes. Está optimizado para que consumas pocos tokens y respondas rápido: cada captura devuelve **solo lo que cambió desde la anterior** + texto plano leído de la zona relevante.
 
-1. **Cómo conectarte** al Verdesk (bootstrap autocontenido).
-2. **Cómo operarlo** con las tools del MCP.
+## Bootstrap autónomo (primera vez en este cliente)
 
-Lee del prompt del usuario los datos: `variant`, `host`, `port`, `control_port`, `name`, `auth`. Si falta alguno, pídeselos antes de seguir.
-
----
-
-## 1. Conexión
-
-Decide el flow por el valor de `variant`.
-
-### variant=local | lan
+El user pegó un bloque "Datos para la skill" que se ve así:
 
 ```
-claude mcp add --transport http <name> http://<host>:<port>/mcp \
-  --header "X-Verdesk-Auth: <auth>" \
-  --header "X-Verdesk-Client-Name: $COMPUTERNAME"
+name: <nombre>
+host: <ip>
+port: <mcp_port>
+control_port: <control_port>
+bootstrap_token: <token>
 ```
 
-(En cmd.exe usar `%COMPUTERNAME%`, en bash/zsh `$HOSTNAME`.)
+Si ese bloque está en el contexto y NO hay un server MCP `<nombre>` ya registrado, debes ejecutar el bootstrap completo TÚ — sin pedirle nada al user salvo aprobar el popup que aparecerá en su pantalla. Si los datos no aparecen (modo Local del mismo PC, server ya registrado, o el user no copió el prompt), saltea esta sección.
 
-Verifica con `claude mcp list` que `<name>` aparezca. Reporta `✓ Conectado a Verdesk (modo <variant>)`.
+### Paso 1 — Auto-instalar la skill como local
 
-### variant=ssh-directo | tailscale
+Si no estás corriendo desde una skill ya activa en `~/.claude/skills/verdesk/SKILL.md`, escribí este mismo manual ahí con el tool Write. En el próximo turn la skill queda disponible para vos y para otras sesiones.
 
-Estos dos modos comparten el flow: hay que abrir un túnel SSH al Pro user. Diferencia: Tailscale requiere pre-check de overlay (paso 0). El resto es idéntico.
+### Paso 2 — Generar keypair SSH dedicado
 
-#### Paso 0 (sólo Tailscale) — verificar overlay
-
-Si `variant=ssh-directo`, salta al paso 1.
-
-Si `variant=tailscale`, el host es `100.x.x.x` que **sólo es alcanzable desde dentro de la overlay Tailscale**. Sin esto, todos los pasos siguientes fallan con timeout.
-
-**a) ¿Tailscale instalado?**
-
-- Windows: `where tailscale.exe`
-- macOS/Linux: `which tailscale`
-
-Si retorna path → sigue a (b).
-
-Si no retorna nada, ofrece auto-instalar:
-
-> "Necesitas Tailscale instalado para alcanzar `<host>`. ¿Lo bajo e instalo? Requiere tu permiso (UAC en Windows / sudo en Linux/macOS)."
-
-Si el usuario acepta:
-
-- **Windows** (PowerShell): `Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile "$env:TEMP\ts-setup.exe"; Start-Process -FilePath "$env:TEMP\ts-setup.exe" -Verb RunAs -Wait`
-- **macOS**: `brew install --cask tailscale` (asume Homebrew).
-- **Linux**: `curl -fsSL https://tailscale.com/install.sh | sh`
-
-Si el usuario rechaza: para, di *"No puedo continuar. Verdesk está detrás de CGNAT y sólo es accesible vía Tailscale."*
-
-**b) ¿Tailscale logueado?**
+Generá un keypair ed25519 sin passphrase, dedicado a esta conexión:
 
 ```
-tailscale status --json
+ssh-keygen -t ed25519 -N "" -C "verdesk-<nombre>" -f ~/.ssh/verdesk_<nombre>
 ```
 
-- `BackendState=Running` → sigue a (c).
-- Otro → di *"Abre Tailscale desde el tray del SO y haz login. Avísame cuando termines."* Reintenta.
+`-N ""` = sin passphrase (la IA no puede tipear passphrase interactiva). `-f` = path destino. El `<nombre>` viene del bloque "Datos para la skill". El comando crea `~/.ssh/verdesk_<nombre>` (privada) y `~/.ssh/verdesk_<nombre>.pub` (pública).
 
-**c) ¿Peer `<host>` visible?**
+Si el keypair ya existe (re-bootstrap), no lo regeneres — reusalo.
 
-Polling cada 3s, max 60s, buscando `<host>` en `.Peer[*].TailscaleIPs[]` del JSON.
+### Paso 3 — Autorizar la pub key en el server Verdesk
 
-- Aparece → sigue al paso 1.
-- No aparece tras 60s → di *"El peer `<host>` no está en tu tailnet. Pídele al dueño del Verdesk que te comparta el node vía Tailscale Sharing: https://tailscale.com/kb/1084/sharing. Avísame cuando aceptes el share."*
+`POST http://<host>:<control_port>/control/authorize-key`
 
-#### Paso 1 — generar keypair SSH temporal
+**Headers**:
+- `X-Verdesk-Auth: <bootstrap_token>` (del bloque)
+- `X-Verdesk-Client-Name: <nombre>` (opcional, aparece en el label del popup que ve el user)
+- `Content-Type: application/json`
+
+**Body**: `{"public_key": "<contenido del archivo verdesk_<nombre>.pub>"}`
+
+**Respuestas**:
+- `200 {"added": true, "ssh_user": "<USERNAME>", "authorized_keys_path": "<path>"}` — popup aprobado, key persistida en `authorized_keys` del Pro user. **Guardá `ssh_user`** — lo necesitas en el paso 4.
+- `200 {"added": false, ...}` — la key ya estaba (re-bootstrap idempotente). También guardá `ssh_user`.
+- `401` — token inválido o ausente. Revisar el bloque "Datos para la skill".
+- `403` — el user rechazó el popup. Avisarle al user, no reintentar.
+- `400` — formato de pub key inválido. Re-generar keypair.
+
+**Importante**: el call queda colgado mientras el user decide en su pantalla. No tiene timeout (V2.34.28+). Si tu HTTP client tiene timeout default agresivo (< 5 min), subilo a infinito o suficiente para que el user vea y apruebe.
+
+Algos aceptados: `ssh-ed25519` (recomendado), `ssh-rsa`, `ecdsa-sha2-nistp{256,384,521}`, `sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`.
+
+### Paso 4 — Abrir tunnel SSH al server
+
+Elegí un puerto local libre `<localPort>` (puede ser el mismo `<port>` si está libre, o cualquier otro alto, p.ej. `50802`). En background, sin bloquear el siguiente paso:
 
 ```
-ssh-keygen -t ed25519 -f <TEMP>/verdesk-<name>-key -N "" -C "verdesk-<name>-client"
+ssh -i ~/.ssh/verdesk_<nombre> -L <localPort>:localhost:<port> -N <ssh_user>@<host>
 ```
 
-Reemplaza `<TEMP>` por el dir temp del SO (`$env:TEMP` en Windows PowerShell, `/tmp` en Linux/macOS).
+`-N` = no ejecuta shell remota (solo el tunnel). El tunnel debe quedar vivo durante toda la sesión MCP. Si el cliente se reinicia, hay que rearmarlo.
 
-Esto crea dos archivos: la priv (`verdesk-<name>-key`) y la pub (`verdesk-<name>-key.pub`).
+Para `<host>` Tailscale (`100.x.x.x`), el tunnel pasa por la overlay; debes estar peerizado en la misma tailnet. Para `<host>` IP pública con UPnP, usa el puerto SSH que aparezca (no siempre 22 — depende del mapping).
 
-#### Paso 2 — autorizar la pub en el Pro user vía endpoint
+### Paso 5 — Registrar el server MCP
 
-```
-curl -X POST "http://<host>:<control_port>/control/authorize-key" \
-  -H "Content-Type: application/json" \
-  -H "X-Verdesk-Auth: <auth>" \
-  -H "X-Verdesk-Client-Name: $COMPUTERNAME" \
-  -d "{\"public_key\": \"<contenido completo de verdesk-<name>-key.pub>\"}"
-```
-
-(Lee el contenido del `.pub` con `Get-Content` / `cat` y embebelo en el JSON. Escapá las comillas.)
-
-**Importante**: si el Verdesk está en LAN/WAN, esta llamada **dispara un popup de aprobación** en la pantalla del Pro user. La response puede tardar hasta 90s mientras el Pro acepta. Mantén el HTTP request abierto.
-
-Response esperada (JSON):
+Editá `.mcp.json` (en el cwd del proyecto del user, o `~/.claude.json` si es global) agregando la entrada:
 
 ```json
-{ "added": true, "ssh_user": "<USERNAME>", "authorized_keys_path": "..." }
+{
+  "mcpServers": {
+    "<nombre>": {
+      "type": "http",
+      "url": "http://127.0.0.1:<localPort>/mcp"
+    }
+  }
+}
 ```
 
-- `added: true` → tu pub se appendeó al `authorized_keys` del Pro user.
-- `added: false` → tu pub ya estaba (alguien la cargó antes; igual sirve, continúa).
-- HTTP 403 → el Pro user rechazó la aprobación. Para, di *"El Pro user rechazó autorizar tu cliente. Pídele que apruebe la conexión y reintenta."*
-- HTTP 400 → la pub tiene formato inválido (volver a generar). Bug — reportar.
+El `127.0.0.1:<localPort>` apunta al tunnel local — la autenticación viaja en la capa SSH, no en headers MCP. No agregues `X-Verdesk-Auth` al server MCP (la pub key ya autentica el canal).
 
-Guarda el `ssh_user` retornado — lo usas en el paso 3.
+### Paso 6 — Pedirle al user que reinicie el cliente
 
-#### Paso 3 — túnel SSH + claude mcp add
+Claude Code cachea los servers MCP del session start. Decile al user que cierre y vuelva a abrir el cliente para que relea el `.mcp.json`. Esto NO es un comando — es una acción de UI (Cmd+Q / cerrar ventana).
 
+Al reabrir, el server `<nombre>` queda conectado y podes usar las tools de Verdesk.
+
+**El bootstrap es one-shot**: la pub key queda en `authorized_keys` del Pro user **para siempre** (hasta que el user la revoque manualmente desde Settings → Equipos autorizados). Próximas sesiones del mismo cliente reutilizan la key sin popup.
+
+## Cuándo usar
+
+Activa Verdesk siempre que la tarea involucre:
+
+- **Ver qué hay en pantalla** del user (Windows, navegador, app de escritorio, juego, IDE, terminal, lo que sea).
+- **Hacer click**, escribir o scrollear sobre la pantalla del user.
+- **Leer texto plano** de una región de pantalla (sin que el user copie/pegue).
+- **Lanzar un comando** en la shell del PC del user (cuando trabajas remoto y quieres evitar 20 clicks).
+- **Mantener memoria visual** entre turnos — qué viste en la pantalla en t-1 vs t-2.
+
+No la uses para: editar archivos del proyecto (usa Read/Write/Edit), correr CI, buscar en código (usa Grep). Verdesk es para **lo que el user ve en su monitor**, no para el codebase.
+
+## Workflow recomendado
+
+```dot
+digraph verdesk_flow {
+  "Tarea visual" [shape=doublecircle];
+  "look()" [shape=box];
+  "¿Sabes qué hacer?" [shape=diamond];
+  "Acción (click/escribir/run_command)" [shape=box];
+  "¿Quedó hecho?" [shape=diamond];
+  "Re-look para verificar" [shape=box];
+  "Fin" [shape=doublecircle];
+
+  "Tarea visual" -> "look()";
+  "look()" -> "¿Sabes qué hacer?";
+  "¿Sabes qué hacer?" -> "Acción (click/escribir/run_command)" [label="sí"];
+  "¿Sabes qué hacer?" -> "look()" [label="no, refinar zona"];
+  "Acción (click/escribir/run_command)" -> "¿Quedó hecho?";
+  "¿Quedó hecho?" -> "Re-look para verificar" [label="dudoso"];
+  "¿Quedó hecho?" -> "Fin" [label="sí"];
+  "Re-look para verificar" -> "Fin";
+}
 ```
-ssh -i <TEMP>/verdesk-<name>-key -L <port>:localhost:<port> -N -f <ssh_user>@<host>
-```
 
-(El `-f` lo manda a background. En sistemas donde `-f` no funciona bien, lánzalo como background del shell.)
+**Regla 1**: empieza con `look()` — es la primitiva barata. Devuelve resumen visual + texto plano + layout. Cero pixels por default, modo `glance`.
 
-Espera 2s para que el bind se estabilice. Después:
+**Regla 2**: si necesitas más detalle, `look(zone=...)` para enfocar una zona, o `refine_cell(...)` para subir calidad de una celda específica. **No vuelvas a capturar todo cada turno**.
 
-```
-claude mcp add --transport http <name> http://127.0.0.1:<port>/mcp \
-  --header "X-Verdesk-Auth: <auth>" \
-  --header "X-Verdesk-Client-Name: $COMPUTERNAME"
-```
+**Regla 3**: para tomar acción usa la primitiva más alta disponible:
+- Si hay árbol de UI Automation (`list_uia_elements`) → `act_uia` (semántico, robusto).
+- Si no, hay layout textual en `look()` → `click_text("texto visible")`.
+- Último recurso: `click_at(x, y)` con coordenadas absolutas.
 
-Verifica con `claude mcp list` que `<name>` aparezca. Reporta:
+**Regla 4**: para texto en pantalla, léelo del campo `text` que devuelve `look()`. Llega **plano**, listo para razonar. No tienes que procesar la imagen.
 
-> ✓ Conectado a Verdesk vía <variant> (peer `<host>`, ssh_user `<ssh_user>`).
-
----
-
-## 2. Operación (tools MCP)
-
-Una vez conectado, consumes las tools del MCP. Reglas duras:
-
-1. **Empieza con `look()`** — primitiva barata, devuelve texto plano + layout, cero pixels por default.
-2. **Refina con zona**, no recapturando todo: `look(zone=...)` o `refine_cell(...)`.
-3. **Acción**: usa la primitiva más alta. UIA (`act_uia`) > texto (`click_text`) > coords (`click_at`).
-4. **Texto en pantalla**: léelo del campo `text` que devuelve `look()`. Ya viene plano.
-5. **Esta skill es para escritorio** (Excel, Word, IDEs, terminales, juegos, apps custom). No la uses para scraping de páginas web tradicional.
+## Tools principales
 
 ### Ver pantalla
-
 | Tool | Cuándo |
-|---|---|
-| `look(zone?, want?, mode?)` | Default. `mode`: `glance` (barato) \| `detail`. `want`: `["text","layout"]` (default) \| suma `"visual"` si necesitas pixels. |
-| `refine_cell(cell_id, quality?)` | Re-capturar UNA celda de la grilla 12×8 con calidad superior. |
-| `get_buffer_state(include_thumbnails?)` | Metadata del buffer activo. |
+|------|--------|
+| `look(zone?, want?, mode?)` | Primitiva principal. `mode`: `glance` (barato, default) \| `detail`. `want`: subset de `["visual","text","layout"]` (default `["text","layout"]`). Devuelve collages + texto + layout. |
+| `capture(cells?, color_mode?, quality?, ...)` | Captura modulada por celdas (grilla 12×8). Devuelve **solo deltas** vs el buffer activo. Legacy — preferí `look()` para flujos nuevos. |
+| `refine_cell(cell_id, quality?)` | Re-capturar UNA celda con calidad superior, sin re-capturar todo. |
+| `get_buffer_state(include_thumbnails?)` | Qué hay en el buffer activo ahora — metadata, sin pixels por default. |
 
 ### Acción
-
 | Tool | Cuándo |
-|---|---|
-| `list_uia_elements(visible_only?, max_depth?)` | Inventario del árbol UIA — `auto_NNN` ids, name, control_type, patterns. |
-| `act_uia(id, action)` | Acción semántica. `action`: `{kind: invoke\|set_value\|toggle\|select\|expand\|collapse, value?}`. |
-| `click_text(query, occurrence?)` | Click sobre substring. `occurrence`: `first` (default) \| `last` \| `nth` \| `all`. |
-| `click_collage(id)` | Click sobre el centro de un collage del último `look()`. |
-| `click_at(x, y)` | Click bajo nivel por coords. Último recurso. |
-| `send_keys(text)` · `press_key(key, ctrl?, alt?, shift?, win?)` | Tipear texto, tecla nombrada o combo. |
-| `scroll(direction, amount_px)` | `up` \| `down` \| `left` \| `right`. |
-| `focus_window(hwnd_hex)` | Traer ventana al frente antes de mandar input. |
+|------|--------|
+| `act_uia(id, action)` | Acción semántica sobre un elemento UI Automation. `action` es un objeto `{kind, value?}` — `kind`: `invoke` \| `set_value` (+`value`) \| `toggle` \| `select` \| `expand` \| `collapse`. `id` es un `auto_NNN` de `list_uia_elements`. |
+| `list_uia_elements(visible_only?, max_depth?)` | Inventario del árbol UI Automation del target — IDs `auto_NNN`, name, control_type, patterns soportados. Solo desktop. |
+| `click_text(query, occurrence?)` | Click sobre un substring de pantalla. `occurrence`: `first` (default) \| `last` \| `nth` \| `all`. |
+| `click_collage(id)` | Click sobre el centro de un collage estable del último `look()`. |
+| `click_at(x, y)` · `send_keys(text)` · `press_key(key, ctrl?, alt?, shift?, win?)` | Bajo nivel: click por coords, tipear texto, tecla nombrada o combo (ej. `press_key("P", ctrl=true)`). |
+| `scroll(direction, amount_px)` | Scrollear el viewport. `direction`: `up` \| `down` \| `left` \| `right`. |
+| `focus_window(hwnd_hex)` | Traer una ventana al frente antes de mandar input. |
 
-### Memoria visual entre turnos
-
+### Historial visual (memoria entre turnos)
 | Tool | Cuándo |
-|---|---|
-| `list_history(reason?, url_contains?, limit?)` | Snapshots archivados. |
-| `query_history(phash, threshold?)` | "¿Vi esto antes?" Memoria asociativa cross-session. |
+|------|--------|
+| `list_history(reason?, url_contains?, limit?, ...)` | Snapshots archivados con su razón de reset. |
+| `query_history(phash, threshold?)` | "¿Vi esto antes?" Memoria asociativa visual cross-session. |
 
 ### Profiles de modulación
-
 | Tool | Cuándo |
-|---|---|
-| `list_profiles(target_match?, min_rating?, creator_kind?)` | Recetas guardadas. |
+|------|--------|
+| `list_profiles(target_match?, min_rating?, creator_kind?)` | Recetas guardadas (resolución, color mode, ajustes). |
 | `load_profile(id? \| target_match?)` | El mejor profile para un target (ej. `target_match="monitor:primary"`). |
-| `save_profile(target_type, target_match, params, creator)` | Guardar una receta. |
-| `rate_profile(id, rating?)` | Reportar performance (0.0–1.0). |
+| `save_profile(target_type, target_match, params, creator, ...)` | Guardar una receta cuando encuentras una buena combinación. |
+| `rate_profile(id, rating?)` | Reportar qué tan bien rindió un profile (0.0–1.0; la próxima IA lo prefiere si rateaste alto). |
 
 ### Shell remoto
-
 | Tool | Cuándo |
-|---|---|
-| `run_command(command, cwd?, timeout_ms?)` | Comando en el PC remoto. Útil para evitar 20 clicks. Devuelve stdout/stderr/exit_code. |
+|------|--------|
+| `run_command(command, cwd?, timeout_ms?)` | Ejecutar un comando en el PC del user. Útil cuando trabajas remoto y quieres evitar input synth. Devuelve stdout/stderr/exit_code. |
 
----
+## Setup local (modo Local, mismo PC)
 
-## Tono
+Cuando Verdesk corre en la misma máquina que el cliente IA (modo Local), saltea todo el Bootstrap autónomo. El user solo necesita registrar el server MCP en loopback:
 
-El usuario quiere que **hagas la tarea**, no que narres cada tool call. Al terminar: una frase con qué hiciste + resultado. Sin desglose salvo que lo pida.
+```
+claude mcp add --transport http verdesk http://127.0.0.1:<mcp_port>/mcp
+```
+
+(El `<mcp_port>` por default es `47802`, configurable en Settings de Verdesk.)
+
+## Tono al responder al user
+
+El user de Verdesk típicamente quiere que **hagas la tarea**, no que le expliques cómo. Cuando logres lo pedido, di qué hiciste en una frase + el resultado. No detalles cada tool call salvo que lo pregunten. Verdesk te da las herramientas; el user te paga por usarlas.

@@ -4,25 +4,27 @@ Claude Code skill para usar **[Verdesk](https://github.com/chamilonster/verdesk)
 
 Verdesk expone tu pantalla y el control del PC vía MCP, pero a diferencia de un screenshot tool genérico **manda solo deltas + texto plano**, no la pantalla completa cada turno. Resultado: menos tokens, más velocidad, mejor decisión de la IA.
 
-## Instalación
+## Cómo se usa
+
+El user copia un prompt de Settings → 04 ACCESO en la UI de Verdesk y lo pega en su cliente Claude Code. El prompt contiene el link a este `SKILL.md` y los datos de conexión.
+
+La IA cliente lee el `SKILL.md`, lo absorbe como skill local (`~/.claude/skills/verdesk/SKILL.md`), y ejecuta el bootstrap automático: genera keypair SSH, postea la pub al server (un popup le aparece al user para aprobar una sola vez), abre el tunnel SSH, y registra el server MCP en `.mcp.json`. Después le pide al user que reinicie el cliente para que recargue los servers.
+
+Detalle completo del bootstrap autónomo en [`SKILL.md`](./SKILL.md#bootstrap-autónomo-primera-vez-en-este-cliente).
+
+### Modo Local (mismo PC)
+
+Cuando Verdesk corre en la misma máquina que el cliente, el bootstrap se reduce a:
 
 ```bash
-# Dentro de Claude Code:
-/plugin marketplace add https://github.com/chamilonster/verdesk-skill
-/plugin install verdesk@verdesk-skill
+claude mcp add --transport http verdesk http://127.0.0.1:47802/mcp
 ```
 
-Después, registrá el endpoint MCP que viene de tu instalación de Verdesk:
-
-```bash
-claude mcp add verdesk http://127.0.0.1:47802/mcp
-```
-
-Si Verdesk está corriendo en otro PC, el endpoint cambia. Settings → 04 ACCESO en la UI de Verdesk te arma el comando exacto y un archivo de invitación para pasar por pendrive/mail.
+(El `47802` es el `mcp_port` default, configurable en Settings.)
 
 ## Qué hace esta skill
 
-Le da contexto a la IA cliente (Claude Code u otro consumidor MCP) sobre **cuándo usar Verdesk** y **qué tool elegir** para cada tarea visual. Sin esta skill el modelo igual puede consumir las tools, pero pierde el patrón "look → decide → action → verify" que minimiza tokens.
+Le da contexto a la IA cliente (Claude Code u otro consumidor MCP) sobre **cuándo usar Verdesk** y **qué tool elegir** para cada tarea visual. Además contiene el manual de bootstrap autónomo para conexiones remotas (SSH tunnel + autorización de pub key). Sin esta skill el modelo no sabría cómo conectarse a una instalación remota de Verdesk.
 
 ## Qué hace Verdesk (resumen)
 
@@ -34,15 +36,14 @@ Le da contexto a la IA cliente (Claude Code u otro consumidor MCP) sobre **cuán
 
 ## Modos de acceso
 
-Verdesk tiene 3 modos seleccionables desde Settings → 04 ACCESO:
+Verdesk tiene 2 modos seleccionables desde Settings → 04 ACCESO:
 
 | Modo | Cómo conecta | Auth |
 |------|--------------|------|
 | **Local** | `127.0.0.1` — mismo PC | Sin auth |
-| **LAN** | IP del host en la red local | Handshake con popup en el server la primera vez |
-| **WAN** | Tunel SSH hasta el host | SSH + handshake con popup la primera vez |
+| **Remote** | Tunnel SSH al host (Tailscale o IP pública + UPnP) | SSH pub key + 1 popup de aprobación al inicio |
 
-Cada modo genera un prompt copy-paste listo para pegar en el cliente. WAN/LAN además generan un archivo `<hostname>_verdesk.md` con todo lo necesario (endpoint, comando SSH, link a esta skill).
+El modo Remote unifica los viejos LAN y WAN: todo cliente externo entra por SSH tunnel cifrado. Una sola pub key autorizada vale para siempre — sin tokens MCP recurrentes ni popups repetidos.
 
 ## Repo principal de Verdesk
 
