@@ -1,11 +1,41 @@
 ---
 name: verdesk
-description: Use when you need to control the user's desktop (see screen, click, type, read text on screen, run commands) via the Verdesk MCP server. Optimized for language models — returns fewer tokens than a generic screenshot tool.
+description: Use when you need to control the user's desktop (see screen, click, type, read text on screen, run commands) via the Verdesk MCP server. Optimized for language models — returns fewer tokens than a generic screenshot tool. **If you are a large model (Opus or similar), delegate intensive desktop operation to a Haiku/Sonnet subagent and supervise — see "Pick the right model".**
 ---
 
 # Verdesk — desktop control via MCP
 
 **What this is for you**: an MCP toolbox that lets you see the user's screen and operate their machine. It saves tokens — it does not send you full screenshots every turn, it sends just what changed.
+
+---
+
+## Pick the right model (READ THIS FIRST)
+
+Verdesk works equally with any Claude model, but for **economy and context hygiene** the work should be split:
+
+### If you are Opus (or any large model)
+
+**Do NOT do intensive desktop work yourself.** Intensive = filling forms with multiple fields, clicking through wizards, scraping text from many regions, multi-step task automation. Reasons:
+
+1. Each `look()` / `dry_run` preview returns image bytes that pile up in your context — your reasoning quality degrades after a few hundred KB of crops.
+2. Your token price is ~15× a Haiku's. For 40 form fields at ~$0.10 each (Haiku) vs ~$2 each (Opus), the difference is $4 vs $80.
+3. The work is mostly mechanical — pick label, derive input rect, dry_run, click, send_keys — exactly what a smaller model can do once it has read this manual.
+
+**Instead, delegate**: spawn a Haiku or Sonnet subagent with a brief that tells it (a) to read this skill first at `~/.claude/skills/verdesk/SKILL.md`, (b) the exact task with data, (c) the report format. Stay in the loop as supervisor:
+
+- Verify with a final `look()` after the subagent reports.
+- Spot-check with 1–2 `dry_run` previews on critical fields.
+- Handle exceptions and ambiguous cases the subagent flagged.
+
+### If you are Haiku or Sonnet
+
+**You are the operator.** Read this manual carefully, especially:
+- "The clicking pattern (READ THIS)" — top-down hierarchy of click tools.
+- "Form fields — finding the input from the label" — how to derive the input rect from the OCR label.
+- "When filling multiple fields" — re-`look()` between fields, auto-scroll/auto-advance is common.
+- "Reporting back" — enumerate every tool call honestly.
+
+Use `dry_run: true` liberally. It is free, and a wrong click on a form can leave the state unrecoverable.
 
 ---
 
@@ -205,6 +235,40 @@ If the form has many similar fields, the offsets typically generalize across the
 
 ---
 
+## When filling multiple fields (READ THIS)
+
+Forms commonly **auto-scroll** or **auto-advance** after each field is filled. Foxit, web forms, and most PDF readers do this. Concretely:
+
+- After you `send_keys` into a field, the cursor may jump to the next field automatically.
+- The page may scroll up/down to keep the active field centered.
+- Your previous `look()` data is **STALE** after the first `send_keys`.
+
+**Rule**: call `look()` **between every field**. The OCR is cheap (~150–300 ms, ~5K tokens) and re-anchors you to the current state of the form. Do not assume the bbox from `look()` #1 is still valid after `send_keys` #1.
+
+**Pattern**:
+
+```
+look() #1                          → identify field 1 label
+click_in_rect(..., dry_run=true)   → verify input box
+click_in_rect(..., dry_run=false)  → real click
+send_keys("value 1")
+
+look() #2                          → re-anchor (page may have moved!)
+click_in_rect(..., dry_run=true)   → verify field 2 input box
+click_in_rect(..., dry_run=false)
+send_keys("value 2")
+
+look() #3                          → re-anchor
+... etc ...
+
+look() #final                      → VERIFY: each value appears where expected,
+                                     and NO unexpected text appeared anywhere
+```
+
+**The final verification look() is mandatory.** Inspect every field you typed in: the text should appear in the position you expected. If you see unexpected text in a field you did NOT intend to fill, it means an auto-advance moved the cursor and your `send_keys` landed somewhere else. Report this and ask the orchestrator how to clean up — do not silently move on.
+
+---
+
 ## Tools
 
 ### See the screen
@@ -292,14 +356,30 @@ If the form has many similar fields, the offsets typically generalize across the
 
 ## Reporting back
 
-When you finish a task, your report MUST include:
+When you finish a task, your report MUST include a **literal enumeration** of every MCP tool call you made, in order:
 
-- `tool_calls_total: <N>` — the total number of MCP tool calls you made (count all `look`, `click_*`, `dry_run`, `send_keys`, etc., including failed ones). Not "attempts" — "attempts" hides path complexity. Count the raw tool calls.
-- The exact coordinates or operations you committed.
+```
+tool_calls:
+  1. look()
+  2. click_in_rect(x=842, y=301, w=80, h=24, dry_run=true)
+  3. click_in_rect(x=842, y=301, w=80, h=24, dry_run=false)
+  4. send_keys("Camilo")
+  5. look()
+  6. click_in_rect(...)
+  ...
+tool_calls_total: <count the lines above, do not guess>
+```
+
+Do not write "one attempt", "a few tries", "several look()s" — write the literal list. Counting from memory or estimating is forbidden — your harness can give you the exact list if you don't remember.
+
+Also include:
+- One line per field: `<Field>: dry_runs=<n>, final_coords=(x,y), typed="<value>", verified_in_final_look=true|false`.
 - Any field where the dry_run preview was ambiguous and you had to fall back on heuristics.
+- Any unexpected behavior you saw (auto-advance, auto-scroll, popup, error message).
+- The output of the final verification `look()` for each typed value — explicitly: "saw 'Camilo' at y=371, expected, OK" or "did NOT see 'Brossard' anywhere, abort".
 
-Bad: "One attempt." — hides 12 internal tool calls.
-Good: "`tool_calls_total: 12` — 1 look, 6 dry_runs to find the input field offset, 5 click_in_rect + send_keys pairs to fill 5 fields."
+Bad: "One attempt." — hides 12 internal tool calls and prevents the orchestrator from auditing the work.
+Good: full enumeration as above.
 
 ## Tone with the user
 
