@@ -175,9 +175,33 @@ Both `click_in_rect` and `click_in_cell` accept `dry_run: true`. The click is NO
 
 If the crosshair is on the wrong thing, recompute and try again. When it looks right, repeat the call with `dry_run: false`. This loop costs almost nothing and rescues many failed actions.
 
+**If you are not 100% confident** that the crosshair is on the right thing — run **one more `dry_run`** with a different offset before committing. Do not commit a click while in doubt; the preview is free and an incorrect click can leave the form in an unrecoverable state.
+
 ### 7. `click_at(x, y)` — last resort
 
 Pixel-perfect, no helpers. Use when none of the above fits.
+
+---
+
+## Form fields — finding the input from the label
+
+OCR only sees the **label text**, not the white input rectangle. So when you `look()` a form, the collages give you bboxes for the labels ("Given Name", "City"), but not for the input fields themselves.
+
+Convention used by almost every form (USPTO, Foxit, web forms):
+
+- **Vertical layout** (label on top of input): the input rectangle starts a few px BELOW the label and is typically 25–40 px tall and 1.5–2× as wide as the label text.
+- **Horizontal layout** (label on the left of input): the input is just to the right of the label, vertically aligned with it.
+
+So if a label `"Given Name"` has `bbox_abs = {x:533, y:501, w:92, h:12}`, a reasonable guess for the input field's center is:
+
+```
+center_x = label.x + 50   (rough — between the label x and a bit into the wider input)
+center_y = label.y + 35   (label is ~12 px tall, input starts ~10 px below, input ~20 px tall → click ~35 px below label.y)
+```
+
+Always confirm with `dry_run: true`. If the crosshair lands on the label text or on the white margin outside the input, shift the offset 10 px and try again. **Two or three dry_runs are normal** for a form field you have never seen before.
+
+If the form has many similar fields, the offsets typically generalize across them — once you find the right Δy for one field, the rest of the labels in the same column use the same Δy.
 
 ---
 
@@ -265,6 +289,17 @@ Pixel-perfect, no helpers. Use when none of the above fits.
 - **Action looks like nothing happened** → some apps need the window focused first. `focus_window(hwnd_hex)` before the click.
 
 ---
+
+## Reporting back
+
+When you finish a task, your report MUST include:
+
+- `tool_calls_total: <N>` — the total number of MCP tool calls you made (count all `look`, `click_*`, `dry_run`, `send_keys`, etc., including failed ones). Not "attempts" — "attempts" hides path complexity. Count the raw tool calls.
+- The exact coordinates or operations you committed.
+- Any field where the dry_run preview was ambiguous and you had to fall back on heuristics.
+
+Bad: "One attempt." — hides 12 internal tool calls.
+Good: "`tool_calls_total: 12` — 1 look, 6 dry_runs to find the input field offset, 5 click_in_rect + send_keys pairs to fill 5 fields."
 
 ## Tone with the user
 
