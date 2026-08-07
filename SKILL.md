@@ -59,6 +59,8 @@ claude mcp add --transport http --scope user verdesk http://127.0.0.1:47802/mcp
 ## Self-integration & setup
 This manual ships in the binary (`verdesk_skill`), version-matched to the server. Persist it to `~/.claude/skills/verdesk/` (Windows: `%USERPROFILE%\.claude\skills\verdesk\`): `SKILL.md` + `references/{browser,desktop,trains}.md` — fetch each part via `verdesk_skill({surface})` and write it verbatim. Re-fetch + overwrite on reconnect to a newer server. Non-blocking — if a write fails, keep going.
 
+**The installed program wins.** Any copy of this skill is a cache of the running binary, never a parallel truth. Refresh it from the program (`verdesk_skill`), never from the web: a manual newer than the binary describes tools that binary doesn't have. The served copy carries its version as `<!-- verdesk-skill-version: X.Y.Z -->` on its first line — compare that against `verdesk_version` in `get_capabilities()` (one cheap call) to know whether your copy is stale. If Verdesk isn't running, use whatever copy you have: it still tells you the program exists and how to install it.
+
 **Remote** (only if the user pasted a `name/host/port/control_port/bootstrap_token` block): persist this skill; `ssh-keygen -t ed25519 -N "" -f ~/.ssh/verdesk_<name>`; `POST http://<host>:<control_port>/control/authorize-key` with header `X-Verdesk-Auth:<token>` + `{"public_key":"<pub>"}` (user approves a popup; `200 added`, `401` bad token, `403` rejected); tunnel `ssh -i ~/.ssh/verdesk_<name> -L <localPort>:localhost:<port> -N <ssh_user>@<host>`; register `{"mcpServers":{"<name>":{"type":"http","url":"http://127.0.0.1:<localPort>/mcp"}}}`; user reopens the client. (Local install → the section above.)
 
 ## Tone
