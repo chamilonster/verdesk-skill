@@ -9,7 +9,7 @@ The first move of any multi-step task is **`suggest_macros()`**. A sequence that
 - **A `(Pro)` tool errors on a free server.** → trains/objects/linked-objects need Pro. Basic see/click/read/run work in free.
 
 ## Batch a live sequence — `run_steps({steps:[{tool,args},…]})`
-When you already know the exact mechanical steps AND the state they run in (fill these 4 fields, then click Submit), send them as ONE call instead of N round-trips. Verdesk runs them in order, reads each step's F1 outcome, and **STOPS at the first that didn't land** → `{ok:false, failed_step, tool, reason, result, results}` with that step's evidence + crosshair crop. All land → `{ok:true, executed, total, results}`. A successful batch is also recorded — you can `playbook_save` it. **Only batch deterministic steps inside a state you already see** — you can't batch across an unknown transition (page 2 of a wizard you haven't looked at). Supported tools: `navigate, browser_click, browser_fill, browser_type, browser_transfer, browser_get_value, browser_select_tab, press_key, type_text, scroll, wait, click_at, click_in_rect, click_in_cell, click_text, drag_path, act_uia, focus_window, set_window_size, set_view_target, run_command, click_button`.
+When you already know the exact mechanical steps AND the state they run in (fill these 4 fields, then click Submit), send them as ONE call instead of N round-trips. Verdesk runs them in order, reads each step's F1 outcome, and **STOPS at the first that didn't land** → `{ok:false, failed_step, tool, reason, result, results}` with that step's evidence + crosshair crop. All land → `{ok:true, executed, total, results}`. A successful batch is also recorded — you can `playbook_save` it. **Only batch deterministic steps inside a state you already see** — you can't batch across an unknown transition (page 2 of a wizard you haven't looked at). Supported tools: `navigate, browser_click, browser_fill, browser_type, browser_transfer, browser_get_value, browser_select_tab, press_key, type_text, scroll, wait, click_at, click_in_rect, click_text, drag_path, act_uia, focus_window, set_window_size, clipboard, set_view_target, run_command, click_button`.
 
 ## Trains (Pro)
 - `suggest_macros()` → trains whose recorded start-screen matches what's on screen NOW, closest first (`match_score` 0 = identical). Read-only. If one fits → `playbook_replay`; else do the task once → `playbook_save`.
@@ -29,7 +29,7 @@ Teach a button by its pixel fingerprint and re-find it anywhere — works where 
 - `track_object({label})` → `{found, moved, dx, dy, searched}`. `object_thumbnail({label})` → 48px sample. `list_buttons()` · `delete_button({label})`.
 
 ## Linked objects (Pro)
-Deterministic analysis of `playbooks.json` + `buttons.json` (no capture/model).
+Deterministic analysis of `playbooks.json` + `buttons.json` (no screenshot/model).
 - `object_links()` → `{objects:[{label, registered?, app, trains, last_seen_rect}], orphan_refs, unused}`.
 - `objects_used_by_train({task})` → objects a train links to. `trains_using_object({label})` → trains linking an object (move/relearn one → see the N affected).
 

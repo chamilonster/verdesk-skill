@@ -40,7 +40,7 @@ On a window, `(x,y)` is relative to that window; the anchor keeps it valid when 
 ## Gotchas (global)
 - **Don't over-look.** Re-seeing what the snapshot / `changes` already told you is the single biggest waste. *Snapshot once → act → re-see only on change → pixels only at a wall.*
 - **Focus drifts.** Before any input burst: `focus_window` → confirm the right window is front → act.
-- **OCR lies on digits.** A number/code that must be exact → `browser_get_text` (DOM) or `screenshot` zoomed — never read it off `look()`'s OCR.
+- **Digit-heavy text can misread.** A number/code that must be exact → `browser_get_text` (DOM) or `screenshot` zoomed — never trust it off `look()`'s text layer.
 
 ## Capabilities
 `get_capabilities()` — flags for the current surface (`has_uia`, `has_dom_eval`, `has_input`, …). Call once to know what works here. `send_report({kind, message})` — `kind` ∈ `bug|feedback|other`, to the Verdesk team.
